@@ -115,15 +115,3 @@ meta.json
 ```
 
 激活角色后，图片、表情包、多句回复和现实信息工具都会继续保持当前角色身份。
-
-## 不要上传的本地数据
-
-这些内容已经在 `.gitignore` 中排除：
-
-- `history/`：聊天历史和联系人上下文。
-- `media/`：微信图片和媒体缓存。
-- `models/*.json`：真实模型配置和 API Key。
-- `config.json`、`mcp_servers.json`、`scheduler_jobs.json`：本地真实配置。
-- `__pycache__/`：Python 缓存。
-
-仓库里只保留示例配置，例如 `models/example.json`。真实密钥和聊天记录请留在本地。
