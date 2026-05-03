@@ -1,0 +1,8 @@
+{
+  "display_name": "Example MiMo V2.5",
+  "provider": "claude",
+  "base_url": "https://token-plan-cn.xiaomimimo.com/anthropic",
+  "model": "mimo-v2.5",
+  "api_key": "YOUR_API_KEY_HERE",
+  "provider_name": "Xiaomi MiMo"
+}

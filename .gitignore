@@ -1,0 +1,35 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local virtual environments
+.venv/
+venv/
+env/
+
+# Runtime conversation state and downloaded media
+history/
+media/
+
+# Local model secrets
+models/*.json
+models/.selected
+!models/example.json
+
+# Local runtime configuration. Commit example files instead.
+config.json
+mcp_servers.json
+scheduler_jobs.json
+!config.example.json
+!mcp_servers.example.json
+!scheduler_jobs.example.json
+
+# Logs and local temp files
+*.log
+*.tmp
+
+# Nested repositories accidentally copied into skills
+skills/**/.git/
+
+# Local Claude/Codex settings
+skills/.claude/settings.local.json

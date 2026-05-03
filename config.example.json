@@ -1,0 +1,6 @@
+{
+  "system_prompt": "You are a helpful assistant with access to tools via MCP servers. Use tools when they would help answer the user's question. Be concise and direct.",
+  "max_tokens": 16000,
+  "thinking": true,
+  "max_tool_rounds": 20
+}

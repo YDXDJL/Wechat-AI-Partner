@@ -1,0 +1,12 @@
+{
+  "servers": [
+    {
+      "name": "wechat",
+      "command": "python",
+      "args": [
+        "-c",
+        "from wechat_clawbot.claude_channel.cli import main; import sys; sys.argv=['wechat-clawbot-cc','serve']; main()"
+      ]
+    }
+  ]
+}
