@@ -1,4 +1,4 @@
-# Micro Agent 项目详细解读与运行指南
+﻿# Micro Agent 项目详细解读与运行指南
 
 本文档面向“第一次接手这个项目的人”，目标是把项目是什么、依赖什么、怎么配置、怎么启动、怎么使用全部讲清楚。
 
@@ -165,7 +165,11 @@ Micro Agent ready. Type '/help' for commands, '/quit' to exit.
 /model-list
 /model <name|number>
 /wechat
-/wechat switch
+/wechat-list
+/wechat-account
+/wechat-new
+/wechat-switch <name|account_id|number>
+/wechat-delete [name|account_id|number]
 /account
 /skills
 /skills show <skill>
@@ -187,7 +191,11 @@ Micro Agent ready. Type '/help' for commands, '/quit' to exit.
 - `/model-list`：列出模型配置。
 - `/model <name|number>`：切换模型。
 - `/wechat`：开启或关闭微信模式。
-- `/wechat switch`：扫码切换微信账号，并清空该账号上下文。
+- `/wechat-list`：列出已保存微信机器人账号、账号名、绑定 skill 和上下文长度。
+- `/wechat-account`：`/wechat-list` 的别名。
+- `/wechat-new`：扫码新增或切换微信机器人账号，并保存账号名。
+- `/wechat-switch <name|account_id|number>`：按账号名、账号 ID 或列表序号切换默认微信机器人账号。
+- `/wechat-delete [name|account_id|number]`：删除微信机器人账号记录和该账号本地历史；不传参数时删除当前账号。
 - `/<skill-name>`：激活某个 skill，并自动进入微信模式。
 - `/bind <skill>`：把 skill 绑定到当前微信账号。
 - `/image <path> [prompt]`：把本地图片发给 Agent 分析。
@@ -203,7 +211,7 @@ Micro Agent ready. Type '/help' for commands, '/quit' to exit.
 运行：
 
 ```text
-/wechat switch
+/wechat-new
 ```
 
 程序会打开或打印二维码链接。用微信扫码后，账号会保存到本地。保存位置由 `wechat_clawbot` 管理，项目自身通过 `wechat_accounts.py` 读取。
@@ -211,7 +219,7 @@ Micro Agent ready. Type '/help' for commands, '/quit' to exit.
 切换账号后：
 
 - 新账号会成为下次默认账号。
-- 当前账号的上下文会清空。
+- 当前运行态联系人选择会清空，但已保存上下文不会删除。
 - sender agent 缓存会重建。
 - pending 图片缓存会清空。
 
@@ -438,14 +446,16 @@ history/conversation.json
 微信账号历史：
 
 ```text
-history/<account_id>/conversation.json
+history/<account_name>/conversation.json
 ```
 
 微信联系人独立历史：
 
 ```text
-history/<account_id>/<sender_id>/conversation.json
+history/<account_name>/<sender_id>/conversation.json
 ```
+
+`/clear` 会把对应 `conversation.json` 写成空消息列表，但保留目录和文件；这样当前聊天对象不会因为清空上下文而丢失。
 
 每次 `Agent.run()` 完成后会保存历史。
 
@@ -505,10 +515,10 @@ python main.py
 ### 13.3 切换微信账号
 
 ```text
-/wechat switch
+/wechat-new
 ```
 
-扫码后，新账号保存为默认账号，上下文清空。
+扫码后，新账号保存为默认账号；程序会清空当前运行态联系人缓存，但不会删除已保存的聊天上下文。
 
 ### 13.4 激活人设并微信聊天
 
@@ -597,3 +607,18 @@ python main.py
 - `history/__llm_tool_test__/`、`history/__skill_weather_test__/`：测试残留，可直接删除。
 
 如果只是准备公开仓库，最稳妥的结构是：源码 + 文档 + 示例配置 + 不含隐私的 skill/sticker 资源；所有账号、聊天、媒体、密钥都留在本地。
+
+微信机器人账号状态也统一放在：
+
+```text
+history/openclaw-state/openclaw-weixin/
+```
+
+其中包含账号凭据、账号别名、当前默认账号和 skill 绑定。程序会自动生成总览文件：
+
+```text
+history/WECHAT_ACCOUNTS_OVERVIEW.md
+```
+
+这个总览文件不打印 token，只用于快速查看账号、历史目录名和绑定 skill。
+

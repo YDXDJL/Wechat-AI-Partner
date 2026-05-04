@@ -1,4 +1,4 @@
-# Micro Agent 完整实现逻辑说明
+﻿# Micro Agent 完整实现逻辑说明
 
 本文档面向“要维护或继续开发这个项目的人”，按代码运行链路解释每个模块如何配合。
 
@@ -134,8 +134,8 @@ make_agent(sender_id=None)
 逻辑：
 
 ```text
-active_account_id + sender_id -> history/<account>/<sender>/conversation.json
-active_account_id only        -> history/<account>/conversation.json
+active_account_id + sender_id -> history/<account_name>/<sender>/conversation.json
+active_account_id only        -> history/<account_name>/conversation.json
 none                          -> history/conversation.json
 ```
 
@@ -268,24 +268,26 @@ clear_history()
 get_history_info()
 ```
 
+`clear_history()` 只会把 `conversation.json` 写成空消息列表，不删除目录或文件。这样 `/clear` 后当前微信联系人仍然可以继续被定位。
+
 ### 5.1 保存路径
 
-由 account_id 决定：
+由账号显示名生成的 `history_key` 决定。一般情况下目录名就是用户给账号起的名字；如果多个账号重名，会追加短 account id，避免混用历史。
 
 ```python
-history/<account_id>/conversation.json
+history/<account_name>/conversation.json
 ```
 
 微信联系人场景下，`account_id` 实际会被设置成：
 
 ```text
-<wechat_account_id>/<sender_id>
+<account_name>/<sender_id>
 ```
 
 所以保存到：
 
 ```text
-history/<wechat_account_id>/<sender_id>/conversation.json
+history/<account_name>/<sender_id>/conversation.json
 ```
 
 ### 5.2 保存前清理
@@ -378,11 +380,49 @@ load_default_wechat_account(account_manager)
 1. 读取上次选择的 account id。
 2. 如果有效，加载该账号。
 3. 如果没有，读取第一个已保存账号。
-4. 如果没有任何账号，提示使用 `/wechat switch`。
+4. 如果没有任何账号，提示使用 `/wechat-new`。
 
-### 7.2 扫码切换账号
+### 7.2 查看账号和上下文
 
-`/wechat switch` 调用：
+`/wechat-list` 和 `/wechat-account` 会调用 `account_manager.list_accounts()`，并读取：
+
+```text
+history/<account_name>/conversation.json
+history/<account_name>/<sender_id>/conversation.json
+```
+
+输出每个已保存微信账号的：
+
+- 账号显示名
+- account id
+- 绑定 skill
+- 总消息数
+
+账号显示名、当前账号、账号凭据和 skill 绑定现在统一保存在项目 `history` 目录内：
+
+```text
+history/openclaw-state/openclaw-weixin/
+```
+
+同一个文件里还会保存稳定的 `history_key`，防止重命名或删除重名账号后历史目录突然变化。
+
+启动时 `wechat_accounts.py` 会设置：
+
+```text
+OPENCLAW_STATE_DIR=history/openclaw-state
+```
+
+因此 `wechat_clawbot` 也会从项目内的 `history/openclaw-state/openclaw-weixin` 读写账号凭据。首次启动会把旧的 `~/.openclaw/openclaw-weixin` 内容复制进来。
+
+账号总览文档自动生成在：
+
+```text
+history/WECHAT_ACCOUNTS_OVERVIEW.md
+```
+
+### 7.3 扫码切换账号
+
+`/wechat-new` 调用：
 
 ```python
 switch_wechat_account()
@@ -396,18 +436,49 @@ switch_wechat_account()
 扫码成功后保存账号
 设置 active_account_id
 重建 WeChatClient
-rebuild_agents(clear_context=True)
+rebuild_agents(clear_context=False)
 必要时恢复微信轮询
 ```
 
-`clear_context=True` 会删除当前账号历史。
+扫码成功后会提示用户输入账号显示名；空输入则使用 account id 作为显示名。
 
-### 7.3 skill 绑定
+### 7.4 切换默认微信机器人账号
+
+`/wechat-switch` 不扫码，按账号名、account id 或列表序号切换当前默认微信机器人账号。
+
+```text
+/wechat-switch
+  -> 列出已有微信机器人账号
+
+/wechat-switch <name|account_id|number>
+  -> 解析账号
+  -> account_manager.set_last_account_id(account_id)
+  -> 重建 WeChatClient 并连接该账号
+  -> 清空运行态 sender 缓存和 pending 图片
+```
+
+`last_wechat_sender` 仍用于内部记录最近联系人，但不再作为 `/wechat-switch` 的手动切换目标。
+
+### 7.5 删除微信机器人账号
+
+`/wechat-delete [name|account_id|number]` 删除指定账号；不传参数时删除当前默认账号。
+
+执行内容：
+
+```text
+删除 wechat_clawbot 保存的账号凭据
+删除 account-aliases.json 中的账号名和 history_key
+删除 skill-bindings.json 中的绑定 skill
+删除 history/<account_name> 本地历史目录
+如果删的是当前账号，自动尝试切换到下一个可用账号
+```
+
+### 7.6 skill 绑定
 
 绑定信息保存在：
 
 ```text
-~/.openclaw/openclaw-weixin/skill-bindings.json
+history/openclaw-state/openclaw-weixin/skill-bindings.json
 ```
 
 `/bind <skill>`：
@@ -776,23 +847,22 @@ meta.json
 
 ## 16. 账号切换和上下文清理
 
-`/wechat switch` 后：
+`/wechat-new` 后：
 
 ```python
-rebuild_agents(clear_context=True)
+rebuild_agents(clear_context=False)
 ```
 
 执行：
 
 ```text
-删除 history/<active_account_id>
 重建主 agent
 清空 sender_agents
 清空 pending_wechat_images
 last_wechat_sender = None
 ```
 
-这保证换微信账号后不会继承旧账号上下文。
+这保证换微信账号后不会继承旧账号的运行态联系人和图片缓存；已保存历史上下文不会被删除。
 
 ## 17. 一条微信文字消息的完整生命周期
 
@@ -935,7 +1005,7 @@ python -m py_compile main.py agent.py wechat.py image_utils.py builtin_tools.py 
 - 问当前时间，模型调用 `CurrentTime`。
 - 问天气，模型调用 `Weather`。
 - 问餐厅/新闻，模型按需调用 `WebSearch/WebFetch`。
-- `/wechat switch` 后上下文和 pending 图片清空。
+- `/wechat-new` 后运行态 sender 缓存和 pending 图片清空；已保存历史上下文不删除。
 
 ## 22. GitHub 上传前清理逻辑
 
@@ -976,3 +1046,4 @@ media/
 ```
 
 `history/` 和 `media/` 是否删除取决于是否还要保留本地上下文；但它们不应该进 GitHub。
+

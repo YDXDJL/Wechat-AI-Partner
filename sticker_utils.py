@@ -23,6 +23,8 @@ class StickerRule:
     file: str
     title: str
     keywords: tuple[str, ...]
+    mood_keywords: tuple[str, ...] = ()
+    context_keywords: tuple[str, ...] = ()
 
 
 def _clean_markdown(text: str) -> str:
@@ -68,6 +70,20 @@ def _normalize_sticker_name(text: str) -> str:
     return re.sub(r"[\s~～()（）?？!！]+", "", text).lower()
 
 
+def _compact_for_match(text: str) -> str:
+    text = _normalize_sticker_name(text)
+    return re.sub(r"[个一下点儿了呢啊呀哦吧嘛吗的地得~～]+", "", text)
+
+
+def _contains_keyword(haystack: str, keyword: str) -> bool:
+    keyword = keyword.strip().lower()
+    if not keyword:
+        return False
+    if keyword in haystack:
+        return True
+    return _compact_for_match(keyword) in _compact_for_match(haystack)
+
+
 def _existing_sticker_files(sticker_dir: str) -> set[str]:
     if not os.path.isdir(sticker_dir):
         return set()
@@ -99,9 +115,11 @@ def load_sticker_rules(sticker_dir: str) -> list[StickerRule]:
     current_title = ""
     current_file = ""
     current_text_parts: list[str] = []
+    current_mood_parts: list[str] = []
+    current_context_parts: list[str] = []
 
     def flush_current() -> None:
-        nonlocal current_title, current_file, current_text_parts
+        nonlocal current_title, current_file, current_text_parts, current_mood_parts, current_context_parts
         if not current_file:
             return
         if current_file not in existing_files:
@@ -112,10 +130,18 @@ def load_sticker_rules(sticker_dir: str) -> list[StickerRule]:
         split_keywords: list[str] = []
         for item in keywords:
             split_keywords.extend(_split_keywords(item))
+        mood_keywords: list[str] = []
+        for item in current_mood_parts:
+            mood_keywords.extend(_split_keywords(item))
+        context_keywords: list[str] = []
+        for item in current_context_parts:
+            context_keywords.extend(_split_keywords(item))
         rules.append(StickerRule(
             file=current_file,
             title=current_title or stem,
             keywords=_dedupe_keywords(split_keywords),
+            mood_keywords=_dedupe_keywords(mood_keywords),
+            context_keywords=_dedupe_keywords(context_keywords),
         ))
 
     for raw_line in content.splitlines():
@@ -128,6 +154,8 @@ def load_sticker_rules(sticker_dir: str) -> list[StickerRule]:
             current_title = _clean_markdown(heading.group(1))
             current_file = ""
             current_text_parts = [current_title]
+            current_mood_parts = []
+            current_context_parts = []
             continue
 
         file_value = _extract_field(line, "文件名")
@@ -140,6 +168,10 @@ def load_sticker_rules(sticker_dir: str) -> list[StickerRule]:
             field_value = _extract_field(line, label)
             if field_value:
                 current_text_parts.append(field_value)
+                if label == "心情":
+                    current_mood_parts.append(field_value)
+                elif label == "使用场景":
+                    current_context_parts.append(field_value)
                 break
 
     flush_current()
@@ -186,6 +218,8 @@ def _merge_quick_index_keywords(content: str, rules: list[StickerRule]) -> list[
                 file=rule.file,
                 title=rule.title,
                 keywords=_dedupe_keywords([*rule.keywords, *extra]),
+                mood_keywords=rule.mood_keywords,
+                context_keywords=_dedupe_keywords([*rule.context_keywords, *extra]),
             ))
         else:
             merged.append(rule)
@@ -200,6 +234,8 @@ def _fallback_rules_from_files(files: set[str]) -> list[StickerRule]:
             file=file,
             title=title,
             keywords=_dedupe_keywords(_split_keywords(title)),
+            mood_keywords=(),
+            context_keywords=(),
         ))
     return rules
 
@@ -225,11 +261,20 @@ class StickerSelector:
         for rule in self.rules:
             score = 0
             for keyword in rule.keywords:
-                keyword = keyword.lower()
-                if keyword in assistant_haystack:
-                    score += 2
-                if keyword in user_haystack:
+                if _contains_keyword(assistant_haystack, keyword):
                     score += 1
+                if _contains_keyword(user_haystack, keyword):
+                    score += 1
+            for keyword in rule.context_keywords:
+                if _contains_keyword(assistant_haystack, keyword):
+                    score += 2
+                if _contains_keyword(user_haystack, keyword):
+                    score += 3
+            for keyword in rule.mood_keywords:
+                if _contains_keyword(assistant_haystack, keyword):
+                    score += 4
+                if _contains_keyword(user_haystack, keyword):
+                    score += 3
             if score > best_score:
                 best_score = score
                 best_file = rule.file
@@ -246,4 +291,5 @@ class StickerSelector:
         if last_file == best_file and now - last_at < STICKER_COOLDOWN_SECONDS:
             return None
         self._last_sent[sender_id] = (best_file, now)
+        logger.info("Selected sticker '%s' for %s with score %s", best_file, sender_id, best_score)
         return path

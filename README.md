@@ -1,12 +1,12 @@
-# Wechat-Ai-Partner
+# Wechat-AI-Partner
 
 一个偏向微信陪伴聊天的小型 Agent。它可以保持角色人设持续聊天，接收微信图片并结合下一句要求理解图片，也能根据聊天氛围自动发送合适的表情包。
 
 ## 主要特点
 
-- **持续聊天**：按微信账号和联系人保存独立上下文，重启后还能接着聊。
+- **持续聊天**：按微信机器人账号和联系人保存独立上下文，重启后还能接着聊。
 - **表情包发送**：启动时读取 `sticker/sticker_introduction.md`，根据角色心情、对话语气和使用场景选择表情包发到微信。
-- **图片理解**：微信发来纯图片时先缓存，不立刻瞎猜；等用户下一句要求后，把图片和文字一起交给模型处理。
+- **图片理解**：微信发来纯图片时先缓存，不立即瞎猜；等用户下一句要求后，把图片和文字一起交给模型处理。
 - **角色 Skill**：支持 `skills/` 下的 `SKILL.md` 人设文件，可以用 `/xxx` 激活不同角色。
 - **多句微信回复**：模型可以用换行拆成多条短消息，程序会像真人聊天一样连续发出。
 - **现实信息工具**：模型可按需调用当前时间、天气、网页搜索和网页抓取工具。
@@ -44,7 +44,11 @@ python main.py
 /model-list             列出模型配置
 /model <name|number>    切换模型
 /wechat                 开启或关闭微信模式
-/wechat switch          扫码切换微信账号
+/wechat-list            列出微信机器人账号
+/wechat-account         /wechat-list 的别名
+/wechat-new             扫码新增/切换微信账号
+/wechat-switch <name|account_id|number> 按名字、账号 ID 或序号切换微信机器人账号
+/wechat-delete [name|account_id|number] 删除微信机器人账号和本地历史
 /skills                 查看可用角色/技能
 /<skill-name>           激活角色并进入微信聊天
 /image <path> [prompt]  发送本地图片给 Agent
@@ -115,3 +119,17 @@ meta.json
 ```
 
 激活角色后，图片、表情包、多句回复和现实信息工具都会继续保持当前角色身份。
+
+## 不要上传的本地数据
+
+这些内容已经在 `.gitignore` 中排除：
+
+- `history/`：聊天历史、联系人上下文、微信机器人账号状态和本地总览。
+- `history/openclaw-state/openclaw-weixin/`：微信机器人账号凭据、别名和绑定信息。
+- `history/WECHAT_ACCOUNTS_OVERVIEW.md`：自动生成的微信账号总览，不打印 token，但仍属于本地状态。
+- `media/`：微信图片和媒体缓存。
+- `models/*.json`：真实模型配置和 API Key。
+- `config.json`、`mcp_servers.json`、`scheduler_jobs.json`：本地真实配置。
+- `__pycache__/`：Python 缓存。
+
+仓库里只保留示例配置，例如 `models/example.json`。真实密钥和聊天记录请留在本地。

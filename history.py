@@ -80,8 +80,14 @@ def load_history(base_dir: str, account_id: str = None) -> list:
 
 def clear_history(base_dir: str, account_id: str = None) -> None:
     path = _get_history_path(base_dir, account_id)
-    if os.path.exists(path):
-        os.remove(path)
+    history_dir = os.path.dirname(path)
+    os.makedirs(history_dir, exist_ok=True)
+    data = {
+        "saved_at": datetime.now().isoformat(),
+        "messages": [],
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def get_history_info(base_dir: str, account_id: str = None) -> str:

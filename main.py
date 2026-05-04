@@ -38,6 +38,12 @@ MODELS_DIR = os.path.join(BASE_DIR, "models")
 PROACTIVE_CHAT_MIN_SECONDS = 25 * 60
 PROACTIVE_CHAT_MAX_SECONDS = 90 * 60
 PROACTIVE_CHAT_IDLE_SECONDS = 12 * 60
+
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+}
 WECHAT_REPLY_INSTRUCTION = (
     "微信回复可以像真人聊天一样分成多条短消息。"
     "简单问题一条即可；情绪复杂、信息较多、需要转折或补充时，"
@@ -143,9 +149,13 @@ Commands:
   /model-list             Scan and list model configurations
   /model <name|number>    Switch to a different model
   /wechat                 Toggle WeChat mode on/off
-  /wechat switch          Scan QR and switch to a new WeChat account
+  /wechat-list            List saved WeChat bot accounts
+  /wechat-account         Alias of /wechat-list
+  /wechat-new             Scan QR and switch to a new WeChat account
+  /wechat-switch <name|account_id|number> Switch current WeChat bot account by name/id/number
+  /wechat-delete [target] Delete a saved WeChat bot account and its local history
   /image <path> [prompt]  Send a local image to the agent
-  /account                Show current WeChat account
+  /account                Alias of /wechat-account
   /skills                 List available skills
   /skills show <skill>    Show skill details and loaded resources
   /skills search <query>  Search skills by name, alias, or description
@@ -171,9 +181,13 @@ def format_help_text(skill_manager: SkillManager | None = None) -> str:
         "/reset - reset conversation",
         "/clear - clear current conversation context",
         "/wechat - toggle WeChat mode",
-        "/wechat switch - scan and switch account",
+        "/wechat-list - list WeChat bot accounts",
+        "/wechat-account - alias of /wechat-list",
+        "/wechat-new - scan and switch account",
+        "/wechat-switch <name|account_id|number> - switch WeChat bot account by name/id/number",
+        "/wechat-delete [name|account_id|number] - delete a WeChat bot account",
         "/image <path> [prompt] - send a local image",
-        "/account - show current WeChat account",
+        "/account - alias of /wechat-account",
         "/skills - list skills",
         "/skills show <skill> - show skill details",
         "/skills search <query> - search skills",
@@ -438,15 +452,32 @@ def parse_image_command(cmd_text: str) -> tuple[str, str]:
 
 
 def clear_account_context(base_dir: str, account_id: str | None) -> None:
-    """Delete persisted chat context for one WeChat account."""
+    """Clear persisted chat context for one WeChat account without deleting folders."""
     if not account_id:
         return
     history_dir = os.path.abspath(os.path.join(base_dir, "history", account_id))
     allowed_root = os.path.abspath(os.path.join(base_dir, "history"))
     if not history_dir.startswith(allowed_root + os.sep):
         raise RuntimeError(f"Refusing to clear unexpected history path: {history_dir}")
-    if os.path.isdir(history_dir):
-        shutil.rmtree(history_dir)
+    if not os.path.isdir(history_dir):
+        os.makedirs(history_dir, exist_ok=True)
+        return
+    for root, _, files in os.walk(history_dir):
+        if "conversation.json" in files:
+            path = os.path.join(root, "conversation.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "messages": []}, f, ensure_ascii=False, indent=2)
+
+
+def sanitize_history_segment(value: str | None, fallback: str = "wechat-account") -> str:
+    raw = (value or "").strip() or fallback
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", raw)
+    safe = re.sub(r"\s+", " ", safe).strip(" .")
+    if not safe:
+        safe = fallback
+    if safe.upper() in _WINDOWS_RESERVED_NAMES:
+        safe = f"{safe}_"
+    return safe[:80]
 
 
 def _history_file_for_sender(base_dir: str, account_id: str | None, sender_id: str | None) -> str | None:
@@ -467,21 +498,36 @@ def sender_has_context(base_dir: str, account_id: str | None, sender_id: str | N
         return False
 
 
-def latest_sender_from_history(base_dir: str, account_id: str | None) -> str | None:
-    if not account_id:
-        return None
+def _history_message_count(path: str) -> tuple[int, str]:
+    if not os.path.isfile(path):
+        return 0, "none"
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return len(data.get("messages", [])), data.get("saved_at", "unknown")
+    except Exception:
+        return 0, "unreadable"
+
+
+def list_wechat_contexts(base_dir: str, account_id: str) -> list[dict]:
     account_history_dir = os.path.join(base_dir, "history", account_id)
     if not os.path.isdir(account_history_dir):
-        return None
-    candidates = []
+        return []
+    contexts: list[dict] = []
     for entry in os.listdir(account_history_dir):
-        path = os.path.join(account_history_dir, entry, "conversation.json")
-        if os.path.isfile(path):
-            candidates.append((os.path.getmtime(path), entry))
-    if not candidates:
-        return None
-    candidates.sort(reverse=True)
-    return candidates[0][1]
+        sender_dir = os.path.join(account_history_dir, entry)
+        if not os.path.isdir(sender_dir):
+            continue
+        count, saved_at = _history_message_count(os.path.join(sender_dir, "conversation.json"))
+        if count <= 0:
+            continue
+        contexts.append({
+            "sender_id": entry,
+            "messages": count,
+            "saved_at": saved_at,
+        })
+    contexts.sort(key=lambda item: item["saved_at"], reverse=True)
+    return contexts
 
 
 def _print_skill_rows(skills: list[dict]) -> None:
@@ -590,7 +636,7 @@ def load_default_wechat_account(account_manager: WeChatAccountManager):
     account_data, account_id = account_manager.get_default_account()
     if account_data:
         return account_data, account_id
-    print("WeChat: no saved account. Type '/wechat switch' to scan and add one.")
+    print("WeChat: no saved account. Type '/wechat-new' to scan and add one.")
     return None, None
 
 
@@ -647,10 +693,44 @@ def main():
             model_config = models[0]
             save_selected_model(MODELS_DIR, model_config.display_name)
 
+    def account_history_key(account_id: str | None) -> str | None:
+        if not account_id:
+            return None
+        saved_key = account_manager.get_account_history_key(account_id)
+        if saved_key:
+            return saved_key
+        accounts = account_manager.list_accounts()
+        target = next((a for a in accounts if a.account_id == account_id), None)
+        display_name = (target.display_name if target else None) or account_manager.get_account_display_name(account_id) or account_id
+        base_key = sanitize_history_segment(display_name, account_id.split("@", 1)[0])
+        duplicates = [
+            a for a in accounts
+            if ((a.display_name or a.account_id).strip() or a.account_id) == display_name
+        ]
+        if len(duplicates) > 1:
+            base_key = f"{base_key}__{account_id.split('@', 1)[0]}"
+        account_manager.set_account_history_key(account_id, base_key)
+        return base_key
+
+    def migrate_legacy_account_history(account_id: str | None, history_key: str | None) -> None:
+        if not account_id or not history_key or account_id == history_key:
+            return
+        history_root = os.path.abspath(os.path.join(BASE_DIR, "history"))
+        legacy_dir = os.path.abspath(os.path.join(history_root, account_id))
+        named_dir = os.path.abspath(os.path.join(history_root, history_key))
+        if not legacy_dir.startswith(history_root + os.sep) or not named_dir.startswith(history_root + os.sep):
+            return
+        if not os.path.isdir(legacy_dir) or os.path.exists(named_dir):
+            return
+        os.makedirs(history_root, exist_ok=True)
+        shutil.move(legacy_dir, named_dir)
+
     def history_scope(sender_id: str | None = None) -> str | None:
-        if active_account_id and sender_id:
-            return os.path.join(active_account_id, sender_id)
-        return active_account_id
+        history_key = account_history_key(active_account_id)
+        migrate_legacy_account_history(active_account_id, history_key)
+        if history_key and sender_id:
+            return os.path.join(history_key, sender_id)
+        return history_key
 
     def apply_bound_skill(target_agent: Agent) -> None:
         if not active_account_id:
@@ -681,47 +761,157 @@ def main():
     def rebuild_agents(clear_context: bool = False):
         nonlocal agent, sender_agents, last_wechat_sender, pending_wechat_images
         if clear_context:
-            clear_account_context(BASE_DIR, active_account_id)
+            clear_account_context(BASE_DIR, history_scope())
         agent = make_agent()
         sender_agents.clear()
         pending_wechat_images.clear()
         last_wechat_sender = None
         return agent
 
-    def switch_wechat_account():
+    def switch_to_wechat_account(account_id: str, clear_context: bool = False) -> bool:
         nonlocal active_account_id, wechat_connected, wechat_mode, wechat_client
         was_polling = wechat_mode
         if wechat_mode:
             wechat_client.stop_polling()
             wechat_mode = False
 
-        account_data = account_manager.qr_login()
+        account_data = account_manager.get_account(account_id)
         if not account_data:
-            print("WeChat: account switch cancelled or failed.")
+            print(f"WeChat account '{account_id}' not found or has no token.")
             if was_polling and wechat_connected:
                 wechat_client.start_polling()
                 wechat_mode = True
-            return
+            return False
 
-        active_account_id = account_data.account_id
+        active_account_id = account_id
         account_manager.set_last_account_id(active_account_id)
         wechat_client = WeChatClient(BASE_DIR)
         wechat_connected = wechat_client.connect(account_data)
-        rebuild_agents(clear_context=True)
+        rebuild_agents(clear_context=clear_context)
 
+        display_name = account_manager.get_account_display_name(active_account_id) or active_account_id
         if wechat_connected:
-            print(f"WeChat: switched to {active_account_id}. Context cleared.")
+            print(f"WeChat: switched to {display_name} ({active_account_id}).")
             if was_polling:
                 wechat_client.start_polling()
                 wechat_mode = True
                 print("WeChat mode ON.")
+            return True
+
+        print(f"WeChat: switched account saved, but connection failed: {display_name} ({active_account_id})")
+        return False
+
+    def switch_wechat_account():
+        nonlocal pending_wechat_account_name
+        account_data = account_manager.qr_login()
+        if not account_data:
+            print("WeChat: account switch cancelled or failed.")
+            return
+
+        switch_to_wechat_account(account_data.account_id, clear_context=False)
+        pending_wechat_account_name = account_data.account_id
+        print(f"给这个微信机器人账号起个名字 [{account_data.account_id}]：", end="", flush=True)
+
+    def format_wechat_account_report() -> str:
+        accounts = account_manager.list_accounts()
+        if not accounts:
+            return "No saved WeChat accounts. Use /wechat-new to scan and save one."
+        lines = ["WeChat accounts:"]
+        name_counts: dict[str, int] = {}
+        for account in accounts:
+            display_name = account.display_name or account.account_id
+            name_counts[display_name] = name_counts.get(display_name, 0) + 1
+        for index, account in enumerate(accounts, 1):
+            active_marker = " *active*" if account.account_id == active_account_id else ""
+            history_key = account_history_key(account.account_id) or account.account_id
+            migrate_legacy_account_history(account.account_id, history_key)
+            account_count, account_saved_at = _history_message_count(
+                os.path.join(BASE_DIR, "history", history_key, "conversation.json")
+            )
+            contexts = list_wechat_contexts(BASE_DIR, history_key)
+            total_messages = account_count + sum(c["messages"] for c in contexts)
+            display_name = account.display_name or account.account_id
+            list_name = display_name
+            if name_counts.get(display_name, 0) > 1:
+                list_name = f"{display_name} ({account.account_id.split('@', 1)[0]})"
+            lines.append(
+                f"  {index}. {list_name}{active_marker}\n"
+                f"     id: {account.account_id}\n"
+                f"     skill: {account.skill or '-'}\n"
+                f"     context: {total_messages} messages"
+            )
+            if account_saved_at != "none":
+                lines.append(f"     saved: {account_saved_at}")
+        lines.append("")
+        lines.append("Use /wechat-switch <name|account_id|number> to switch the default WeChat bot account.")
+        lines.append("Use /wechat-new to scan and save/switch to a new WeChat bot account.")
+        return "\n".join(lines)
+
+    def print_wechat_account_report() -> None:
+        print(format_wechat_account_report())
+
+    def switch_current_wechat_account(selector: str = "") -> None:
+        if not selector:
+            print(format_wechat_account_report())
+            return
+        account = account_manager.resolve_account_selector(selector)
+        if not account:
+            print(f"WeChat account '{selector}' not found.")
+            print(format_wechat_account_report())
+            return
+        switch_to_wechat_account(account.account_id, clear_context=False)
+
+    def delete_wechat_account(selector: str = "") -> None:
+        nonlocal active_account_id, wechat_connected, wechat_mode, wechat_client, agent, sender_agents, last_wechat_sender
+        target = account_manager.resolve_account_selector(selector) if selector else None
+        if not target and not selector and active_account_id:
+            target = next((a for a in account_manager.list_accounts() if a.account_id == active_account_id), None)
+        if not target:
+            print("Usage: /wechat-delete <name|account_id|number>")
+            print(format_wechat_account_report())
+            return
+
+        deleting_active = target.account_id == active_account_id
+        if deleting_active and wechat_mode:
+            wechat_client.stop_polling()
+            wechat_mode = False
+
+        history_key = account_history_key(target.account_id) or target.account_id
+        migrate_legacy_account_history(target.account_id, history_key)
+        history_root = os.path.abspath(os.path.join(BASE_DIR, "history"))
+        history_dir = os.path.abspath(os.path.join(history_root, history_key))
+        if history_dir.startswith(history_root + os.sep) and os.path.isdir(history_dir):
+            shutil.rmtree(history_dir)
+
+        removed = account_manager.remove_account(target.account_id)
+        display_name = target.display_name or target.account_id
+        if removed:
+            print(f"WeChat account deleted: {display_name} ({target.account_id})")
         else:
-            print("WeChat: switched account saved, but connection failed.")
+            print(f"WeChat account record may already be gone: {display_name} ({target.account_id})")
+
+        if deleting_active:
+            active_account_id = None
+            wechat_connected = False
+            wechat_client = WeChatClient(BASE_DIR)
+            sender_agents.clear()
+            pending_wechat_images.clear()
+            last_wechat_sender = None
+            account_data, next_account_id = load_default_wechat_account(account_manager)
+            if account_data:
+                active_account_id = next_account_id
+                wechat_connected = wechat_client.connect(account_data)
+                agent = make_agent()
+                if wechat_connected:
+                    next_name = account_manager.get_account_display_name(active_account_id) or active_account_id
+                    print(f"WeChat: switched to next account {next_name} ({active_account_id}).")
+            else:
+                agent = make_agent()
 
     def ensure_wechat_mode() -> bool:
         nonlocal wechat_mode
         if not wechat_connected:
-            print("WeChat not connected. Type '/wechat switch' to scan and save an account.")
+            print("WeChat not connected. Type '/wechat-new' to scan and save an account.")
             return False
         if not wechat_mode:
             wechat_client.start_polling()
@@ -732,10 +922,16 @@ def main():
     def activate_skill_for_wechat(skill, args: str = "", target_sender: str | None = None):
         nonlocal last_wechat_sender
         if not active_account_id:
-            print("No account selected. Use '/wechat switch' to scan and save one first.")
+            print("No account selected. Use '/wechat-new' to scan and save one first.")
             return
         if not ensure_wechat_mode():
             return
+
+        raw_args = args.strip()
+        force_opening = False
+        if raw_args.startswith("--open"):
+            force_opening = True
+            raw_args = raw_args[len("--open"):].strip()
 
         skill_prompt = skill_manager.get_skill_prompt(skill.name)
         agent.set_persistent_skill(skill_prompt, skill.name)
@@ -743,22 +939,25 @@ def main():
             chat_agent.set_persistent_skill(skill_prompt, skill.name)
         account_manager.bind_skill(active_account_id, skill.name)
 
-        target_sender = target_sender or last_wechat_sender or latest_sender_from_history(BASE_DIR, active_account_id)
+        account_data = account_manager.get_account(active_account_id)
+        account_default_sender = account_data.user_id if account_data else None
+        target_sender = target_sender or last_wechat_sender or account_default_sender
         if not target_sender:
-            print(f"Skill '{skill.name}' is active. Waiting for the first WeChat message to know who to reply to.")
+            display_name = account_manager.get_account_display_name(active_account_id) or active_account_id
+            print(f"Skill '{skill.name}' bound to WeChat account {display_name} ({active_account_id}). Waiting for incoming WeChat messages.")
             return
 
         last_wechat_sender = target_sender
         chat_agent = get_sender_agent(target_sender)
         chat_agent.set_persistent_skill(skill_prompt, skill.name)
 
-        if sender_has_context(BASE_DIR, active_account_id, target_sender):
+        if sender_has_context(BASE_DIR, history_scope(), target_sender) and not force_opening:
             print(f"Skill '{skill.name}' is active for WeChat. Existing context found; waiting for user message.")
             return
 
-        opening_prompt = args.strip() or (
+        opening_prompt = raw_args or (
             "你现在刚刚在微信里主动联系对方，这是一个全新的聊天，没有已有上下文。"
-            "请以当前 skill 身份自然自我介绍，带出“闪亮登场”的感觉或字样，"
+            "请以当前 skill 身份自然自我介绍，"
             "然后询问对方希望你怎么称呼、名字、基本信息和偏好。"
             "请只输出会直接发给对方的微信内容，不要解释你在扮演谁。"
         )
@@ -871,7 +1070,7 @@ def main():
         schedule_next_proactive_chat()
         if not wechat_mode or not wechat_connected or not active_account_id:
             return
-        target_sender = last_wechat_sender or latest_sender_from_history(BASE_DIR, active_account_id)
+        target_sender = last_wechat_sender
         if not target_sender:
             return
         proactive_count = proactive_unanswered_counts.get(target_sender, 0)
@@ -925,6 +1124,7 @@ def main():
     schedule_next_proactive_chat()
     non_blocking = NonBlockingInput()
     model_setup_session: ModelSetupSession | None = None
+    pending_wechat_account_name: str | None = None
 
     print(f"Model: {model_config.display_name} ({model_config.provider_name} / {model_config.model})")
     print(f"History: {get_history_info(BASE_DIR)}")
@@ -962,7 +1162,7 @@ def main():
                         if skill:
                             skill_args = command_text.split(None, 1)[1] if len(command_text.split(None, 1)) > 1 else ""
                             try:
-                                had_context = sender_has_context(BASE_DIR, active_account_id, msg.sender_id)
+                                had_context = sender_has_context(BASE_DIR, history_scope(), msg.sender_id)
                                 activate_skill_for_wechat(skill, skill_args, msg.sender_id)
                                 if had_context:
                                     print(f"[WeChat] Skill '{skill.name}' active; existing context found, waiting for next message.")
@@ -971,6 +1171,14 @@ def main():
                         else:
                             if command_name == "new-model":
                                 response = "请在终端里使用 /new-model 新增模型，避免 API Key 出现在微信聊天里。"
+                            elif command_name in ("wechat-account", "wechat-list"):
+                                response = format_wechat_account_report()
+                            elif command_name == "wechat-new":
+                                response = "请在终端里使用 /wechat-new 扫码新增或切换微信账号。"
+                            elif command_name == "wechat-switch":
+                                response = "请在终端里使用 /wechat-switch <账号名|账号ID|序号> 切换微信机器人账号。"
+                            elif command_name == "wechat-delete":
+                                response = "请在终端里使用 /wechat-delete <账号名|账号ID|序号> 删除微信机器人账号，避免误删。"
                             elif command_name == "model-list":
                                 response = format_model_list_text()
                             elif command_name == "model":
@@ -1038,6 +1246,13 @@ def main():
                 continue
             raw_user_input = user_input.rstrip("\r\n")
 
+            if pending_wechat_account_name:
+                name = raw_user_input.strip() or pending_wechat_account_name
+                account_manager.set_account_display_name(pending_wechat_account_name, name)
+                print(f"WeChat account name saved: {name} ({pending_wechat_account_name})")
+                pending_wechat_account_name = None
+                continue
+
             if model_setup_session:
                 completed_config = model_setup_session.consume(raw_user_input)
                 if model_setup_session.cancelled:
@@ -1083,16 +1298,27 @@ def main():
                 model_setup_session.start()
             elif is_command and cmd_lower == "model-list":
                 print_model_list()
-            elif is_command and cmd_lower in ("account", "wechat account"):
-                if active_account_id:
-                    print(f"WeChat account: {active_account_id}")
-                else:
-                    print("WeChat account: none. Type '/wechat switch' to scan and save one.")
-            elif is_command and cmd_lower == "wechat switch":
+            elif is_command and cmd_lower in ("account", "wechat account", "wechat-account", "wechat-list"):
+                print_wechat_account_report()
+            elif is_command and (cmd_lower == "wechat-new" or cmd_lower == "wechat new"):
                 switch_wechat_account()
+            elif is_command and (cmd_lower == "wechat-switch" or cmd_lower.startswith("wechat-switch ") or cmd_lower == "wechat switch" or cmd_lower.startswith("wechat switch ")):
+                if cmd_lower.startswith("wechat-switch"):
+                    selector = cmd_text.split(None, 1)[1] if len(cmd_text.split(None, 1)) > 1 else ""
+                else:
+                    parts = cmd_text.split(None, 2)
+                    selector = parts[2] if len(parts) > 2 else ""
+                switch_current_wechat_account(selector)
+            elif is_command and (cmd_lower == "wechat-delete" or cmd_lower.startswith("wechat-delete ") or cmd_lower == "wechat delete" or cmd_lower.startswith("wechat delete ")):
+                if cmd_lower.startswith("wechat-delete"):
+                    selector = cmd_text.split(None, 1)[1] if len(cmd_text.split(None, 1)) > 1 else ""
+                else:
+                    parts = cmd_text.split(None, 2)
+                    selector = parts[2] if len(parts) > 2 else ""
+                delete_wechat_account(selector)
             elif is_command and cmd_lower == "wechat":
                 if not wechat_connected:
-                    print("WeChat not connected. Type '/wechat switch' to scan and save an account.")
+                    print("WeChat not connected. Type '/wechat-new' to scan and save an account.")
                     continue
                 wechat_mode = not wechat_mode
                 if wechat_mode:
@@ -1124,7 +1350,7 @@ def main():
                 if len(parts) < 2:
                     print("Usage: /bind <skill-name>")
                 elif not active_account_id:
-                    print("No account selected. Use '/wechat switch' to scan and save one first.")
+                    print("No account selected. Use '/wechat-new' to scan and save one first.")
                 else:
                     requested_name = parts[1].strip()
                     skill = skill_manager.get_skill(requested_name)
